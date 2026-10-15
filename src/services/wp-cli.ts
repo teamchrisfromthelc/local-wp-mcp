@@ -28,6 +28,14 @@ const WP_CLI_PHAR_PATHS = [
   '/Applications/Local.app/Contents/Resources/extraResources/bin/wp-cli/wp-cli.phar',
   // Linux fallback
   path.join(os.homedir(), '.local', 'share', 'Local', 'resources', 'extraResources', 'bin', 'wp-cli', 'wp-cli.phar'),
+  // Windows (per-user and per-machine installs)
+  ...(process.platform === 'win32'
+    ? [
+        path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Programs', 'Local', 'resources', 'extraResources', 'bin', 'wp-cli', 'wp-cli.phar'),
+        path.join(process.env.ProgramFiles || 'C:\Program Files', 'Local', 'resources', 'extraResources', 'bin', 'wp-cli', 'wp-cli.phar'),
+        path.join(process.env['ProgramFiles(x86)'] || 'C:\Program Files (x86)', 'Local', 'resources', 'extraResources', 'bin', 'wp-cli', 'wp-cli.phar'),
+      ]
+    : []),
 ];
 
 // Subcommand verbs that are inherently read-only.
@@ -158,18 +166,26 @@ async function buildEnvironment(site: LocalSiteConfig): Promise<NodeJS.ProcessEn
   const phpBinDir = await getPhpBinDir(site);
   const mysqlBinDir = await getMysqlBinDir(site);
 
-  return {
+  const env: NodeJS.ProcessEnv = {
     PATH: [phpBinDir, mysqlBinDir, process.env.PATH].join(path.delimiter),
     PHPRC: path.join(runDataDir, 'conf', 'php'),
     HOME: process.env.HOME,
     TMPDIR: process.env.TMPDIR,
     LANG: process.env.LANG,
   };
+  if (process.platform === 'win32') {
+    // PHP/DLL loading and temp dirs need these on Windows
+    for (const key of ['SystemRoot', 'SYSTEMROOT', 'windir', 'ComSpec', 'PATHEXT', 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA']) {
+      if (process.env[key]) env[key] = process.env[key];
+    }
+    env.HOME = env.HOME ?? process.env.USERPROFILE;
+  }
+  return env;
 }
 
 async function resolvePhpBin(site: LocalSiteConfig): Promise<string> {
   const phpBinDir = await getPhpBinDir(site);
-  return path.join(phpBinDir, 'php');
+  return path.join(phpBinDir, process.platform === 'win32' ? 'php.exe' : 'php');
 }
 
 export function normalizeCommand(command: string): string {
@@ -322,6 +338,10 @@ export async function executeWpCli(
 
   const cmdParts = command.trim().split(/\s+/);
   const allArgs = [
+    // Keep PHP startup/runtime diagnostics (e.g. a missing php_imagick.dll in
+    // Local's php.ini) off stdout so they cannot corrupt parsed WP-CLI output.
+    '-d', 'display_startup_errors=0',
+    '-d', 'display_errors=stderr',
     wpCliPhar,
     `--path=${webRoot}`,
     ...cmdParts,

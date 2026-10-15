@@ -37,7 +37,7 @@ function makeSite(overrides?: Partial<LocalSiteConfig>): LocalSiteConfig {
 
 describe('resolvePath', () => {
   it('replaces leading ~ with home directory', () => {
-    expect(resolvePath('~/test')).toBe(path.join(os.homedir(), 'test'));
+    expect(path.normalize(resolvePath('~/test'))).toBe(path.join(os.homedir(), 'test'));
   });
 
   it('leaves absolute paths unchanged', () => {
@@ -64,7 +64,7 @@ describe('getPlatformBinDir', () => {
 describe('getWebRoot', () => {
   it('appends app/public to site path', () => {
     const site = makeSite({ path: '/home/user/Local Sites/mysite' });
-    expect(getWebRoot(site)).toBe('/home/user/Local Sites/mysite/app/public');
+    expect(getWebRoot(site)).toBe(path.join('/home/user/Local Sites/mysite', 'app', 'public'));
   });
 
   it('resolves ~ in site path', () => {
@@ -101,8 +101,7 @@ describe('getMysqlSocketPath', () => {
 
 describe('getSitesJsonPath', () => {
   it('returns a path containing sites.json', () => {
-    // This works on macOS/Linux, would fail on Windows
-    if (process.platform === 'darwin' || process.platform === 'linux') {
+    if (process.platform === 'darwin' || process.platform === 'linux' || process.platform === 'win32') {
       const p = getSitesJsonPath();
       expect(p).toContain('sites.json');
     }
@@ -111,7 +110,7 @@ describe('getSitesJsonPath', () => {
 
 describe('getLocalDataDir', () => {
   it('returns a path on supported platforms', () => {
-    if (process.platform === 'darwin' || process.platform === 'linux') {
+    if (process.platform === 'darwin' || process.platform === 'linux' || process.platform === 'win32') {
       const dir = getLocalDataDir();
       expect(dir).toContain('Local');
     }

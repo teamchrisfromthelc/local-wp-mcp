@@ -3,20 +3,23 @@ import path from 'path';
 import os from 'os';
 import type { LocalSiteConfig, SitesJson } from '../types.js';
 
-const SITES_JSON_PATHS: Record<string, string> = {
-  darwin: path.join(os.homedir(), 'Library', 'Application Support', 'Local', 'sites.json'),
-  linux: path.join(os.homedir(), '.config', 'Local', 'sites.json'),
-};
+// On Windows Local keeps its data in %APPDATA%\Local (usually C:\Users\<user>\AppData\Roaming\Local).
+const WIN_APPDATA = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
 
 const LOCAL_DATA_DIRS: Record<string, string> = {
   darwin: path.join(os.homedir(), 'Library', 'Application Support', 'Local'),
   linux: path.join(os.homedir(), '.config', 'Local'),
+  win32: path.join(WIN_APPDATA, 'Local'),
 };
+
+const SITES_JSON_PATHS: Record<string, string> = Object.fromEntries(
+  Object.entries(LOCAL_DATA_DIRS).map(([platform, dir]) => [platform, path.join(dir, 'sites.json')])
+);
 
 export function getLocalDataDir(): string {
   const dir = LOCAL_DATA_DIRS[process.platform];
   if (!dir) {
-    throw new Error(`Unsupported platform: ${process.platform}. Local by Flywheel supports macOS and Linux.`);
+    throw new Error(`Unsupported platform: ${process.platform}. Local by Flywheel supports macOS, Linux and Windows.`);
   }
   return dir;
 }
@@ -24,7 +27,7 @@ export function getLocalDataDir(): string {
 export function getSitesJsonPath(): string {
   const p = SITES_JSON_PATHS[process.platform];
   if (!p) {
-    throw new Error(`Unsupported platform: ${process.platform}. Local by Flywheel supports macOS and Linux.`);
+    throw new Error(`Unsupported platform: ${process.platform}. Local by Flywheel supports macOS, Linux and Windows.`);
   }
   return p;
 }
@@ -132,7 +135,43 @@ export function getPlatformBinDir(): string {
   if (process.platform === 'darwin') {
     return process.arch === 'arm64' ? 'darwin-arm64' : 'darwin';
   }
+  if (process.platform === 'win32') {
+    return process.arch === 'x64' || process.arch === 'arm64' ? 'win64' : 'win32';
+  }
   return 'linux';
+}
+
+export const EXE_EXT = process.platform === 'win32' ? '.exe' : '';
+
+/**
+ * Locate the directory containing `exeName` for a lightning service.
+ * On Windows the layout differs per service and architecture:
+ *   php-*     -> bin/win64/php.exe            (no "bin" subfolder)
+ *   mysql-*   -> bin/win64/bin/mysql.exe
+ *   mariadb-* -> bin/win32/bin/mysql.exe      (shipped 32-bit folder name)
+ * so candidates are probed instead of assuming one layout. Probing prevents
+ * launching a binary of the wrong architecture ("not a valid Win32 application").
+ */
+async function resolveBinDir(serviceDir: string, exeName: string): Promise<string> {
+  const preferred = getPlatformBinDir();
+  const archs = process.platform === 'win32'
+    ? [...new Set([preferred, 'win64', 'win32'])]
+    : [preferred];
+  const candidates: string[] = [];
+  for (const arch of archs) {
+    candidates.push(path.join(serviceDir, 'bin', arch, 'bin'));
+    candidates.push(path.join(serviceDir, 'bin', arch));
+  }
+  for (const dir of candidates) {
+    try {
+      await fs.access(path.join(dir, exeName + EXE_EXT));
+      return dir;
+    } catch {
+      // try next
+    }
+  }
+  // Fall back to the historical (macOS/Linux) layout
+  return candidates[0];
 }
 
 /**
@@ -167,9 +206,8 @@ async function findServiceDir(serviceName: string, version: string): Promise<str
 }
 
 export async function getPhpBinDir(site: LocalSiteConfig): Promise<string> {
-  const platform = getPlatformBinDir();
   const serviceDir = await findServiceDir('php', site.services.php.version);
-  return path.join(serviceDir, 'bin', platform, 'bin');
+  return resolveBinDir(serviceDir, 'php');
 }
 
 /**
@@ -186,10 +224,9 @@ function getDbService(site: LocalSiteConfig): { name: string; version: string } 
 }
 
 export async function getMysqlBinDir(site: LocalSiteConfig): Promise<string> {
-  const platform = getPlatformBinDir();
   const db = getDbService(site);
   const serviceDir = await findServiceDir(db.name, db.version);
-  return path.join(serviceDir, 'bin', platform, 'bin');
+  return resolveBinDir(serviceDir, db.name === 'mariadb' ? 'mariadb' : 'mysql');
 }
 
 /**
@@ -207,4 +244,13 @@ export function getRunDataDir(site: LocalSiteConfig): string {
 
 export function getMysqlSocketPath(site: LocalSiteConfig): string {
   return path.join(getRunDataDir(site), 'mysql', 'mysqld.sock');
+}
+
+/**
+ * Windows has no unix socket for MySQL; Local exposes the DB on 127.0.0.1:<port>
+ * (port from sites.json services.<mysql|mariadb>.ports.MYSQL).
+ */
+export function getMysqlPort(site: LocalSiteConfig): number | undefined {
+  const svc = site.services.mysql ?? site.services.mariadb;
+  return svc?.ports?.MYSQL?.[0];
 }

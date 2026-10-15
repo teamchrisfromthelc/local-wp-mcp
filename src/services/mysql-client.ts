@@ -1,7 +1,7 @@
 import mysql from 'mysql2/promise';
 import type { Pool, PoolConnection, FieldPacket, RowDataPacket } from 'mysql2/promise';
 import type { LocalSiteConfig } from '../types.js';
-import { getMysqlSocketPath } from './local-detector.js';
+import { getMysqlSocketPath, getMysqlPort } from './local-detector.js';
 
 let pool: Pool | null = null;
 let currentSiteId: string | null = null;
@@ -49,10 +49,15 @@ export function createPool(site: LocalSiteConfig): Pool {
     pool.end().catch(() => {});
   }
 
-  const socketPath = getMysqlSocketPath(site);
+  // Windows: TCP on loopback (no unix socket). macOS/Linux: unix socket.
+  const port = getMysqlPort(site);
+  const connection =
+    process.platform === 'win32'
+      ? { host: '127.0.0.1', port: port ?? 3306 }
+      : { socketPath: getMysqlSocketPath(site) };
 
   pool = mysql.createPool({
-    socketPath,
+    ...connection,
     user: site.mysql.user || 'root',
     password: site.mysql.password || 'root',
     database: site.mysql.database || 'local',
